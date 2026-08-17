@@ -1,264 +1,150 @@
-(() => {
-    "use strict";
+// app.js - JoJo Web Console
 
-    const params = new URLSearchParams(window.location.search);
-    const mode = params.get("mode");
+const urlParams = new URLSearchParams(window.location.search);
+const mode = urlParams.get('mode');
+const peerId = urlParams.get('peer');
 
-    const BUTTON_TO_KEY = Object.freeze({
-        UP: "ArrowUp",
-        DOWN: "ArrowDown",
-        LEFT: "ArrowLeft",
-        RIGHT: "ArrowRight",
-        LP: "a",
-        MP: "s",
-        HP: "q",
-        LK: "z",
-        MK: "x",
-        HK: "e",
-        START: "Enter",
-        SELECT: "Shift"
+if (mode === 'tv') {
+    initTVMode();
+} else if (mode === 'controller') {
+    initControllerMode();
+} else {
+    // Caso nenhuma opção seja passada, exibe tela de seleção básica
+    document.body.innerHTML = `
+        <div style="color: white; text-align: center; padding: 50px; font-family: sans-serif;">
+            <h1>JoJo Web Console</h1>
+            <p>Selecione o modo de execução:</p>
+            <a href="?mode=tv" style="color: #00ffcc; font-size: 20px; margin-right: 20px;">Modo TV</a>
+            <a href="?mode=controller" style="color: #ff0055; font-size: 20px;">Modo Controle</a>
+        </div>
+    `;
+}
+
+// ---------------------------------------------------------
+// MODO TV (CONSOLE)
+// ---------------------------------------------------------
+function initTVMode() {
+    document.getElementById('controller-container').style.display = 'none';
+    document.getElementById('tv-container').style.display = 'block';
+
+    // Mapeamento de teclas virtuais para o EmulatorJS
+    const keyMap = {
+        'UP': 'ArrowUp',
+        'DOWN': 'ArrowDown',
+        'LEFT': 'ArrowLeft',
+        'RIGHT': 'ArrowRight',
+        'LP': 'a',       // Soco Fraco
+        'MP': 's',       // Soco Médio
+        'HP': 'q',       // Soco Forte
+        'LK': 'z',       // Chute Fraco
+        'MK': 'x',       // Chute Médio
+        'HK': 'e',       // Chute Forte
+        'START': 'Enter',
+        'SELECT': 'Shift'
+    };
+
+    // Configuração do EmulatorJS carregando a ROM direto do Internet Archive
+    window.EJS_player = '#game';
+    window.EJS_core = 'fbneo';
+    window.EJS_gameUrl = 'https://archive.org/download/lvalriv_gmail_Cps3/Roms/Capcom%20Play%20System%20III/jojoba.zip';
+    window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+
+    // Carrega o script loader do EmulatorJS
+    const ejsScript = document.createElement('script');
+    ejsScript.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
+    document.body.appendChild(ejsScript);
+
+    // Inicialização da conexão PeerJS na TV
+    const peer = new Peer();
+
+    peer.on('open', (id) => {
+        // Constrói a URL para o celular se conectar como controle
+        const controllerUrl = `${window.location.origin}${window.location.pathname}?mode=controller&peer=${id}`;
+        
+        // Gera o QR Code na tela
+        const qrcodeContainer = document.getElementById("qrcode");
+        qrcodeContainer.innerHTML = "";
+        new QRCode(qrcodeContainer, {
+            text: controllerUrl,
+            width: 128,
+            height: 128
+        });
     });
 
-    const showElement = (element) => {
-        if (element) {
-            element.style.display = "";
-        }
-    };
-
-    const hideElement = (element) => {
-        if (element) {
-            element.style.display = "none";
-        }
-    };
-
-    const setStatus = (element, message) => {
-        if (element) {
-            element.textContent = message;
-        }
-    };
-
-    const dispatchKeyboardEvent = (action, mappedKey) => {
-        if (action !== "keydown" && action !== "keyup") {
-            return;
+    peer.on('connection', (conn) => {
+        console.log("Controle conectado!");
+        
+        // Oculta o QR Code após a conexão para não atrapalhar a visão da TV
+        const qrcodeContainer = document.getElementById("qrcode");
+        if (qrcodeContainer) {
+            qrcodeContainer.style.display = 'none';
         }
 
-        const event = new KeyboardEvent(action, {
-            key: mappedKey,
-            code: mappedKey,
-            bubbles: true,
-            cancelable: true
-        });
+        // Escuta os comandos enviados pelo celular
+        conn.on('data', (data) => {
+            if (data && data.button && keyMap[data.button]) {
+                const mappedKey = keyMap[data.button];
+                const eventType = data.action === 'keydown' ? 'keydown' : 'keyup';
 
-        window.dispatchEvent(event);
-    };
-
-    const loadEmulatorJS = () => {
-        const script = document.createElement("script");
-        script.src = "https://cdn.emulatorjs.org/latest/data/loader.js";
-        script.async = true;
-        script.onload = () => {
-            setStatus(document.getElementById("tv-status"), "EmulatorJS carregado.");
-        };
-        script.onerror = () => {
-            setStatus(document.getElementById("tv-status"), "Não foi possível carregar o EmulatorJS.");
-        };
-        document.body.appendChild(script);
-    };
-
-    const initTVMode = () => {
-        const tvContainer = document.getElementById("tv-container");
-        const controllerContainer = document.getElementById("controller-container");
-        const game = document.getElementById("game");
-        const tvStatus = document.getElementById("tv-status");
-
-        hideElement(controllerContainer);
-        showElement(tvContainer);
-
-        window.EJS_player = "#game";
-        window.EJS_core = "fbneo";
-        window.EJS_gameUrl = "roms/jojo.zip";
-        window.EJS_biosUrl = "";
-        window.EJS_pathtodata = "https://cdn.emulatorjs.org/latest/data/";
-
-        if (!game) {
-            setStatus(tvStatus, "Erro: contentor do emulador não encontrado.");
-            return;
-        }
-
-        setStatus(tvStatus, "A criar ligação do comando...");
-        loadEmulatorJS();
-
-        if (typeof window.Peer !== "function") {
-            setStatus(tvStatus, "Erro: PeerJS não está disponível.");
-            return;
-        }
-
-        const peer = new Peer();
-
-        peer.on("open", (id) => {
-            const controllerUrl = `${window.location.origin}${window.location.pathname}?mode=controller&peer=${encodeURIComponent(id)}`;
-            const qrContainer = document.getElementById("qrcode");
-
-            if (qrContainer && typeof window.QRCode === "function") {
-                qrContainer.replaceChildren();
-                new QRCode(qrContainer, controllerUrl);
+                window.dispatchEvent(new KeyboardEvent(eventType, {
+                    key: mappedKey,
+                    code: mappedKey,
+                    bubbles: true
+                }));
             }
-
-            setStatus(tvStatus, "Comando pronto. Leia o QR Code com o telemóvel.");
         });
+    });
+}
 
-        peer.on("connection", (conn) => {
-            setStatus(tvStatus, "Comando ligado.");
+// ---------------------------------------------------------
+// MODO CONTROLE (CELULAR)
+// ---------------------------------------------------------
+function initControllerMode() {
+    document.getElementById('tv-container').style.display = 'none';
+    document.getElementById('controller-container').style.display = 'block';
 
-            conn.on("data", (data) => {
-                if (!data || typeof data !== "object") {
-                    return;
-                }
-
-                const mappedKey = BUTTON_TO_KEY[data.button];
-
-                if (!mappedKey) {
-                    return;
-                }
-
-                dispatchKeyboardEvent(data.action, mappedKey);
-            });
-
-            conn.on("close", () => {
-                setStatus(tvStatus, "Comando desligado. A aguardar nova ligação...");
-            });
-
-            conn.on("error", () => {
-                setStatus(tvStatus, "Erro na ligação do comando.");
-            });
-        });
-
-        peer.on("error", (error) => {
-            const message = error && error.message ? error.message : "Erro de comunicação.";
-            setStatus(tvStatus, `PeerJS: ${message}`);
-        });
-    };
-
-    const initControllerMode = () => {
-        const tvContainer = document.getElementById("tv-container");
-        const controllerContainer = document.getElementById("controller-container");
-        const status = document.getElementById("controller-status");
-        const peerId = params.get("peer");
-
-        hideElement(tvContainer);
-        showElement(controllerContainer);
-
-        if (!peerId) {
-            setStatus(status, "Erro de conexão: o ID da TV não foi fornecido.");
-            return;
-        }
-
-        if (typeof window.Peer !== "function") {
-            setStatus(status, "Erro de conexão: PeerJS não está disponível.");
-            return;
-        }
-
-        const peer = new Peer();
-
-        peer.on("open", () => {
-            const conn = peer.connect(peerId, {
-                reliable: false
-            });
-
-            const setConnectionStatus = (message) => {
-                setStatus(status, message);
-            };
-
-            conn.on("open", () => {
-                setConnectionStatus("Comando ligado à TV.");
-            });
-
-            conn.on("close", () => {
-                setConnectionStatus("Ligação encerrada.");
-            });
-
-            conn.on("error", () => {
-                setConnectionStatus("Erro na ligação com a TV.");
-            });
-
-            const buttons = document.querySelectorAll("[data-button]");
-
-            buttons.forEach((button) => {
-                const buttonName = button.dataset.button;
-
-                const sendAction = (action, event) => {
-                    event.preventDefault();
-
-                    if (!conn.open) {
-                        setConnectionStatus("A ligar à TV...");
-                        return;
-                    }
-
-                    conn.send({
-                        button: buttonName,
-                        action
-                    });
-                };
-
-                button.addEventListener("pointerdown", (event) => {
-                    button.setPointerCapture?.(event.pointerId);
-                    button.classList.add("pressed");
-                    sendAction("keydown", event);
-                }, { passive: false });
-
-                button.addEventListener("pointerup", (event) => {
-                    button.classList.remove("pressed");
-                    sendAction("keyup", event);
-                }, { passive: false });
-
-                button.addEventListener("pointerleave", (event) => {
-                    button.classList.remove("pressed");
-                    if (conn.open) {
-                        event.preventDefault();
-                        conn.send({
-                            button: buttonName,
-                            action: "keyup"
-                        });
-                    }
-                }, { passive: false });
-
-                button.addEventListener("pointercancel", (event) => {
-                    button.classList.remove("pressed");
-                    if (conn.open) {
-                        event.preventDefault();
-                        conn.send({
-                            button: buttonName,
-                            action: "keyup"
-                        });
-                    }
-                }, { passive: false });
-            });
-        });
-
-        peer.on("error", (error) => {
-            const message = error && error.message ? error.message : "Não foi possível estabelecer a ligação.";
-            setStatus(status, `Erro: ${message}`);
-        });
-    };
-
-    const initUnknownMode = () => {
-        const tvContainer = document.getElementById("tv-container");
-        const controllerContainer = document.getElementById("controller-container");
-        hideElement(tvContainer);
-        hideElement(controllerContainer);
-
-        const body = document.body;
-        const error = document.createElement("div");
-        error.style.cssText = "min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#000;color:#fff;text-align:center;font-family:Arial,Helvetica,sans-serif;font-size:18px;";
-        error.textContent = "Modo inválido. Use ?mode=tv ou ?mode=controller&peer=ID.";
-        body.appendChild(error);
-    };
-
-    if (mode === "tv") {
-        initTVMode();
-    } else if (mode === "controller") {
-        initControllerMode();
-    } else {
-        initUnknownMode();
+    if (!peerId) {
+        alert("Erro: ID da TV não encontrado na URL. Escaneie o QR Code novamente.");
+        return;
     }
-})();
+
+    const peer = new Peer();
+
+    peer.on('open', () => {
+        // Conecta à TV usando canal de dados direto (UDP / un-reliable para latência zero)
+        const conn = peer.connect(peerId, { reliable: false });
+
+        conn.on('open', () => {
+            console.log("Conectado à TV com sucesso!");
+            
+            // Mapeia todos os botões do controle
+            const buttons = document.querySelectorAll('[data-button]');
+
+            buttons.forEach((btn) => {
+                const buttonName = btn.getAttribute('data-button');
+
+                // Envia comando ao pressionar o botão
+                btn.addEventListener('pointerdown', (e) => {
+                    e.preventDefault();
+                    conn.send({ button: buttonName, action: 'keydown' });
+                });
+
+                // Envia comando ao soltar ou arrastar o dedo para fora do botão
+                btn.addEventListener('pointerup', (e) => {
+                    e.preventDefault();
+                    conn.send({ button: buttonName, action: 'keyup' });
+                });
+
+                btn.addEventListener('pointerleave', (e) => {
+                    e.preventDefault();
+                    conn.send({ button: buttonName, action: 'keyup' });
+                });
+            });
+        });
+
+        conn.on('error', (err) => {
+            console.error("Erro na conexão:", err);
+            alert("Erro ao conectar com a TV.");
+        });
+    });
+}
