@@ -1,300 +1,202 @@
-// app.js - JoJo Web Console
+#!/usr/bin/env python3
+import os
+import socket
+import sys
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-const urlParams = new URLSearchParams(window.location.search);
-const mode = urlParams.get('mode');
-const peerId = urlParams.get('peer');
+PORT = 8080
+FILENAME = "jojoba.zip"
 
-// Mantido EXACTAMENTE como estava no projeto.
-const ORIGINAL_GAME_URL = 'https://archive.org/download/lvalriv_gmail_Cps3/Roms/Capcom%20Play%20System%20III/jojoba.zip';
-const EJS_DATA_PATH = 'https://cdn.emulatorjs.org/stable/data/';
+SEARCH_PATHS = [
+    os.path.abspath("."),
+    "/storage/emulated/0/Download",
+    "/storage/emulated/0/Downloads",
+    os.path.expanduser("~/downloads"),
+]
 
-function setStatus(message, type = 'info') {
-    const el = document.getElementById('tv-status');
-    if (!el) return;
-    el.textContent = message;
-    el.dataset.type = type;
-}
+def get_local_ip():
+    """Obtém o IP local do telemóvel na rede Wi-Fi."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
 
-function setControllerStatus(message, type = 'info') {
-    const el = document.getElementById('controller-status');
-    if (!el) return;
-    el.textContent = message;
-    el.dataset.type = type;
-}
+def locate_rom():
+    """Procura pelo arquivo jojoba.zip nos diretórios padrão."""
+    for path in SEARCH_PATHS:
+        candidate = os.path.join(path, FILENAME)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
 
-if (mode === 'tv') {
-    initTVMode();
-} else if (mode === 'controller') {
-    initControllerMode();
-} else {
-    document.body.innerHTML = `
-        <div style="color: white; text-align: center; padding: 50px; font-family: sans-serif;">
-            <h1>JoJo Web Console</h1>
-            <p>Selecione o modo de execução:</p>
-            <a href="?mode=tv" style="color: #00ffcc; font-size: 20px; margin-right: 20px;">Modo TV</a>
-            <a href="?mode=controller" style="color: #ff0055; font-size: 20px;">Modo Controle</a>
-        </div>
-    `;
-}
+class ROMServerHandler(SimpleHTTPRequestHandler):
+    """Handler HTTP customizado com suporte a CORS, Range Requests (HTTP 206) e Health Check."""
 
-// ---------------------------------------------------------
-// DIAGNÓSTICO DA ROM
-// ---------------------------------------------------------
-async function diagnoseGameSource() {
-    try {
-        setStatus('A verificar acesso à ROM…', 'info');
+    def do_OPTIONS(self):
+        """Responde a requisições preflight do CORS."""
+        self.send_response(200)
+        self.send_cors_headers()
+        self.end_headers()
 
-        const response = await fetch(ORIGINAL_GAME_URL, {
-            method: 'GET',
-            mode: 'cors',
-            cache: 'no-store',
-            headers: {
-                Range: 'bytes=0-1023'
-            }
-        });
+    def send_cors_headers(self):
+        """Adiciona cabeçalhos CORS liberados para o EmulatorJS."""
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Range, Content-Type, Accept")
+        self.send_header("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges")
 
-        const contentType = response.headers.get('content-type') || 'desconhecido';
-        const contentLength = response.headers.get('content-length') || 'desconhecido';
-        const acceptRanges = response.headers.get('accept-ranges') || 'desconhecido';
+    def do_HEAD(self):
+        """Suporte a requisições HEAD para verificar o tamanho da ROM."""
+        if self.path.lstrip("/") == FILENAME:
+            rom_path = locate_rom()
+            if rom_path:
+                file_size = os.path.getsize(rom_path)
+                self.send_response(200)
+                self.send_cors_headers()
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(file_size))
+                self.end_headers()
+                return
+        self.send_error(404, "Arquivo nao encontrado.")
 
-        console.log('[ROM] status:', response.status);
-        console.log('[ROM] content-type:', contentType);
-        console.log('[ROM] content-length:', contentLength);
-        console.log('[ROM] accept-ranges:', acceptRanges);
-        console.log('[ROM] final URL:', response.url);
+    def do_GET(self):
+        # Endpoint de status
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(b"OK - Servidor de ROMs ativo")
+            return
 
-        if (!response.ok && response.status !== 206) {
-            setStatus(`Servidor da ROM respondeu HTTP ${response.status}.`, 'error');
-            return;
-        }
+        # Página inicial de teste
+        if self.path in ("/", "/index.html"):
+            rom_path = locate_rom()
+            status = f"ROM encontrada em: {rom_path}" if rom_path else "ATENCAO: jojoba.zip NAO encontrado nos downloads!"
+            html = f"""<!DOCTYPE html>
+<html>
+<head><title>Servidor ROM JoJo</title></head>
+<body style="font-family:sans-serif; padding:20px;">
+    <h2>Servidor de ROMs - JoJo Web Console</h2>
+    <p><strong>Status:</strong> {status}</p>
+    <ul>
+        <li><a href="/health">Testar Endpoint /health</a></li>
+        <li><a href="/{FILENAME}">Baixar / Testar {FILENAME}</a></li>
+    </ul>
+</body>
+</html>"""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(html.encode("utf-8"))
+            return
 
-        setStatus('ROM acessível. A iniciar o emulador…', 'success');
-    } catch (error) {
-        console.error('[ROM] Falha de acesso:', error);
+        # Trata o download do jojoba.zip
+        if self.path.lstrip("/") == FILENAME:
+            rom_path = locate_rom()
+            if not rom_path:
+                self.send_error(404, f"Arquivo {FILENAME} nao encontrado no armazenamento do dispositivo.")
+                return
+            self.serve_file_with_range(rom_path)
+            return
 
-        const message = String(error?.message || error || 'Erro desconhecido');
+        super().do_GET()
 
-        if (/cors|failed to fetch|network/i.test(message)) {
-            setStatus('A TV não consegue obter a ROM por esta ligação (Network/CORS).', 'error');
-        } else {
-            setStatus(`Falha ao testar a ROM: ${message}`, 'error');
-        }
-    }
-}
+    def serve_file_with_range(self, file_path):
+        """Servidor de arquivo com suporte a HTTP 206 Partial Content (pedidos Range)."""
+        try:
+            file_size = os.path.getsize(file_path)
+            range_header = self.headers.get("Range")
 
-// ---------------------------------------------------------
-// MODO TV
-// ---------------------------------------------------------
-function initTVMode() {
-    const controller = document.getElementById('controller-container');
-    const tv = document.getElementById('tv-container');
+            if range_header:
+                bytes_range = range_header.strip().lower().replace("bytes=", "")
+                parts = bytes_range.split("-")
+                start = int(parts[0]) if parts[0] else 0
+                end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
 
-    if (controller) controller.style.display = 'none';
-    if (tv) tv.style.display = 'block';
+                if start >= file_size or end >= file_size or start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.end_headers()
+                    return
 
-    const keyMap = {
-        'UP': 'ArrowUp',
-        'DOWN': 'ArrowDown',
-        'LEFT': 'ArrowLeft',
-        'RIGHT': 'ArrowRight',
-        'LP': 'a',
-        'MP': 's',
-        'HP': 'q',
-        'LK': 'z',
-        'MK': 'x',
-        'HK': 'e',
-        'START': 'Enter',
-        'SELECT': 'Shift'
-    };
+                length = (end - start) + 1
 
-    // Configuração do EmulatorJS.
-    // O URL da ROM NÃO foi alterado.
-    window.EJS_player = '#game';
+                print(f"[PEDIDO RANGE] Enviando bytes {start}-{end}/{file_size}")
 
-    // 'arcade' é a configuração oficial do EmulatorJS para FBNeo.
-    window.EJS_core = 'arcade';
+                self.send_response(206)
+                self.send_cors_headers()
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header("Content-Length", str(length))
+                self.end_headers()
 
-    window.EJS_gameUrl = ORIGINAL_GAME_URL;
-    window.EJS_pathtodata = EJS_DATA_PATH;
-    window.EJS_gameName = 'JoJo';
-    window.EJS_startOnLoad = true;
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    chunk_size = 64 * 1024
+                    bytes_to_send = length
+                    while bytes_to_send > 0:
+                        chunk = f.read(min(chunk_size, bytes_to_send))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        bytes_to_send -= len(chunk)
+            else:
+                print(f"[PEDIDO COMPLETO] Enviando arquivo total ({file_size} bytes)")
+                self.send_response(200)
+                self.send_cors_headers()
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(file_size))
+                self.end_headers()
 
-    // Evita exigir SharedArrayBuffer/threads no navegador da TV.
-    window.EJS_threads = false;
+                with open(file_path, "rb") as f:
+                    chunk_size = 64 * 1024
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
 
-    setStatus('A preparar o emulador…', 'info');
+        except Exception as e:
+            print(f"[ERRO] Falha ao servir arquivo: {e}")
 
-    window.addEventListener('error', (event) => {
-        const message = event?.message || 'Falha de carregamento.';
-        console.error('[TV] erro global:', event.error || message, event.filename || '');
+def run():
+    rom_path = locate_rom()
+    local_ip = get_local_ip()
 
-        if (/network|load|fetch|cors|wasm|sharedarraybuffer|script|core/i.test(message)) {
-            setStatus(`Erro do emulador: ${message}`, 'error');
-        }
-    });
+    print("=" * 60)
+    print("      JOJO WEB CONSOLE - SERVIDOR ROM LOCAL (PYDROID 3)")
+    print("=" * 60)
 
-    window.addEventListener('unhandledrejection', (event) => {
-        const reason = event?.reason?.message || String(event?.reason || 'Erro desconhecido');
-        console.error('[TV] promessa rejeitada:', event.reason);
+    if rom_path:
+        print(f"[OK] ROM encontrada: {rom_path}")
+    else:
+        print(f"[AVISO] '{FILENAME}' NAO foi encontrado no Download.")
+        print(f"        Certifique-se de colocar o arquivo em /storage/emulated/0/Download/")
 
-        if (/network|load|fetch|cors|wasm|archive|rom|core/i.test(reason)) {
-            setStatus(`Erro de rede/carregamento: ${reason}`, 'error');
-        }
-    });
+    print("-" * 60)
+    print(f"IP do Telemovel: {local_ip}")
+    print(f"URL de Teste:   http://{local_ip}:{PORT}/")
+    print(f"URL da ROM:     http://{local_ip}:{PORT}/{FILENAME}")
+    print("=" * 60)
+    print("Pressione CTRL+C no Pydroid 3 para encerrar.\n")
 
-    // Diagnóstico paralelo. Não bloqueia o EmulatorJS.
-    diagnoseGameSource();
+    server_address = ("", PORT)
+    httpd = HTTPServer(server_address, ROMServerHandler)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nServidor encerrado.")
+        httpd.server_close()
 
-    const ejsScript = document.createElement('script');
-    ejsScript.src = `${EJS_DATA_PATH}loader.js`;
-    ejsScript.async = false;
-
-    ejsScript.onload = () => {
-        console.log('[TV] EmulatorJS loader carregado.');
-        setStatus('EmulatorJS carregado. A iniciar o jogo…', 'info');
-    };
-
-    ejsScript.onerror = (event) => {
-        console.error('[TV] Falha ao carregar EmulatorJS:', event);
-        setStatus('Não foi possível carregar o EmulatorJS.', 'error');
-    };
-
-    document.body.appendChild(ejsScript);
-
-    // -----------------------------------------------------
-    // PEERJS
-    // -----------------------------------------------------
-    if (typeof Peer !== 'function') {
-        console.error('[TV] PeerJS não foi carregado.');
-        return;
-    }
-
-    const peer = new Peer();
-
-    peer.on('open', (id) => {
-        const controllerUrl = `${window.location.origin}${window.location.pathname}?mode=controller&peer=${id}`;
-        const qrcodeContainer = document.getElementById('qrcode');
-
-        if (qrcodeContainer && typeof QRCode === 'function') {
-            qrcodeContainer.innerHTML = '';
-            new QRCode(qrcodeContainer, {
-                text: controllerUrl,
-                width: 128,
-                height: 128
-            });
-        }
-    });
-
-    peer.on('connection', (conn) => {
-        console.log('[TV] Controle conectado.');
-
-        const qrcodeContainer = document.getElementById('qrcode');
-        if (qrcodeContainer) qrcodeContainer.style.display = 'none';
-
-        conn.on('open', () => {
-            setStatus('Comando remoto conectado.', 'success');
-        });
-
-        conn.on('data', (data) => {
-            if (!data || !data.button || !keyMap[data.button]) return;
-
-            const mappedKey = keyMap[data.button];
-            const eventType = data.action === 'keydown' ? 'keydown' : 'keyup';
-
-            window.dispatchEvent(new KeyboardEvent(eventType, {
-                key: mappedKey,
-                code: mappedKey,
-                bubbles: true
-            }));
-        });
-
-        conn.on('close', () => {
-            setStatus('Comando desligado. O jogo continua na TV.', 'info');
-        });
-
-        conn.on('error', (err) => {
-            console.error('[TV] Erro no canal de controlo:', err);
-            setStatus('O comando perdeu a ligação.', 'error');
-        });
-    });
-
-    peer.on('error', (err) => {
-        console.error('[TV] Erro PeerJS:', err);
-    });
-
-    peer.on('disconnected', () => {
-        console.warn('[TV] PeerJS desconectado.');
-    });
-}
-
-// ---------------------------------------------------------
-// MODO CONTROLE
-// ---------------------------------------------------------
-function initControllerMode() {
-    const tv = document.getElementById('tv-container');
-    const controller = document.getElementById('controller-container');
-
-    if (tv) tv.style.display = 'none';
-    if (controller) controller.style.display = 'block';
-
-    if (!peerId) {
-        alert('Erro: ID da TV não encontrado na URL. Escaneie o QR Code novamente.');
-        return;
-    }
-
-    if (typeof Peer !== 'function') {
-        setControllerStatus('PeerJS não foi carregado. Verifica a Internet.', 'error');
-        return;
-    }
-
-    const peer = new Peer();
-
-    peer.on('open', () => {
-        const conn = peer.connect(peerId, { reliable: false });
-
-        conn.on('open', () => {
-            setControllerStatus('Ligado à TV.', 'success');
-
-            const buttons = document.querySelectorAll('[data-button]');
-
-            buttons.forEach((btn) => {
-                const buttonName = btn.getAttribute('data-button');
-
-                btn.addEventListener('pointerdown', (e) => {
-                    e.preventDefault();
-                    conn.send({ button: buttonName, action: 'keydown' });
-                });
-
-                btn.addEventListener('pointerup', (e) => {
-                    e.preventDefault();
-                    conn.send({ button: buttonName, action: 'keyup' });
-                });
-
-                btn.addEventListener('pointerleave', (e) => {
-                    e.preventDefault();
-                    conn.send({ button: buttonName, action: 'keyup' });
-                });
-            });
-        });
-
-        conn.on('close', () => {
-            setControllerStatus('Ligação à TV encerrada.', 'error');
-        });
-
-        conn.on('error', (err) => {
-            console.error('[CONTROLE] Erro na conexão:', err);
-            setControllerStatus(
-                `Erro ao conectar com a TV: ${err?.type || err?.message || 'erro de rede'}`,
-                'error'
-            );
-        });
-    });
-
-    peer.on('error', (err) => {
-        console.error('[CONTROLE] Erro PeerJS:', err);
-        setControllerStatus(
-            `Erro de rede: ${err?.type || err?.message || 'erro desconhecido'}`,
-            'error'
-        );
-    });
-}
+if __name__ == "__main__":
+    run()
