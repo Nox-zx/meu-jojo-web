@@ -4,6 +4,23 @@ const urlParams = new URLSearchParams(window.location.search);
 const mode = urlParams.get('mode');
 const peerId = urlParams.get('peer');
 
+const ORIGINAL_GAME_URL = 'https://archive.org/download/lvalriv_gmail_Cps3/Roms/Capcom%20Play%20System%20III/jojoba.zip';
+const EJS_DATA_PATH = 'https://cdn.emulatorjs.org/stable/data/';
+
+function setStatus(message, type = 'info') {
+    const el = document.getElementById('tv-status');
+    if (!el) return;
+    el.textContent = message;
+    el.dataset.type = type;
+}
+
+function setControllerStatus(message, type = 'info') {
+    const el = document.getElementById('controller-status');
+    if (!el) return;
+    el.textContent = message;
+    el.dataset.type = type;
+}
+
 if (mode === 'tv') {
     initTVMode();
 } else if (mode === 'controller') {
@@ -43,21 +60,60 @@ function initTVMode() {
         'SELECT': 'Shift'
     };
 
-    // Configuração do EmulatorJS carregando a ROM direto do Internet Archive
+    // Configuração do EmulatorJS. O URL da ROM foi mantido exactamente igual.
     window.EJS_player = '#game';
     window.EJS_core = 'fbneo';
-    window.EJS_gameUrl = 'https://archive.org/download/lvalriv_gmail_Cps3/Roms/Capcom%20Play%20System%20III/jojoba.zip';
-    window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+    window.EJS_gameUrl = ORIGINAL_GAME_URL;
+    window.EJS_pathtodata = EJS_DATA_PATH;
+    window.EJS_gameName = 'JoJo';
+    window.EJS_startOnLoad = true;
 
-    // Carrega o script loader do EmulatorJS
+    setStatus('A carregar o emulador…', 'info');
+
+    // Diagnóstico global: Smart TVs podem transformar falhas de CORS/rede em
+    // mensagens genéricas. Guardamos o erro real no console e mostramos uma
+    // mensagem útil na interface sem alterar o URL da ROM.
+    window.addEventListener('error', (event) => {
+        const message = event?.message || 'Falha de rede ou carregamento.';
+        console.error('[TV] erro global:', event.error || message, event.filename || '');
+        if (/network|load|fetch|cors|wasm|script/i.test(message)) {
+            setStatus(`Erro de carregamento: ${message}`, 'error');
+        }
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+        const reason = event?.reason?.message || String(event?.reason || 'Erro desconhecido');
+        console.error('[TV] promessa rejeitada:', event.reason);
+        if (/network|load|fetch|cors|wasm|archive|rom/i.test(reason)) {
+            setStatus(`Erro de rede: ${reason}`, 'error');
+        }
+    });
+
+    // Carrega o script loader do EmulatorJS.
     const ejsScript = document.createElement('script');
-    ejsScript.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
+    ejsScript.src = `${EJS_DATA_PATH}loader.js`;
+    ejsScript.async = false;
+    ejsScript.onload = () => {
+        console.log('[TV] EmulatorJS loader carregado.');
+        setStatus('Emulador carregado. A preparar o jogo…', 'info');
+    };
+    ejsScript.onerror = (event) => {
+        console.error('[TV] Falha ao carregar EmulatorJS:', event);
+        setStatus('Não foi possível carregar o EmulatorJS. Verifica a ligação à Internet da TV.', 'error');
+    };
     document.body.appendChild(ejsScript);
 
     // Inicialização da conexão PeerJS na TV
+    if (typeof Peer !== 'function') {
+        console.error('[TV] PeerJS não foi carregado.');
+        setStatus('O emulador pode continuar, mas o comando remoto não foi carregado.', 'error');
+        return;
+    }
+
     const peer = new Peer();
 
     peer.on('open', (id) => {
+        setStatus('Jogo em carregamento. Comando remoto pronto.', 'info');
         // Constrói a URL para o celular se conectar como controle
         const controllerUrl = `${window.location.origin}${window.location.pathname}?mode=controller&peer=${id}`;
         
@@ -81,6 +137,11 @@ function initTVMode() {
         }
 
         // Escuta os comandos enviados pelo celular
+        conn.on('open', () => {
+            console.log('[TV] Canal de controlo aberto.');
+            setStatus('Comando remoto conectado.', 'success');
+        });
+
         conn.on('data', (data) => {
             if (data && data.button && keyMap[data.button]) {
                 const mappedKey = keyMap[data.button];
@@ -93,6 +154,30 @@ function initTVMode() {
                 }));
             }
         });
+
+        conn.on('close', () => {
+            console.log('[TV] Comando desligado.');
+            setStatus('Comando desligado. O jogo continua na TV.', 'info');
+        });
+
+        conn.on('close', () => {
+            setControllerStatus('Ligação à TV encerrada.', 'error');
+        });
+
+        conn.on('error', (err) => {
+            console.error('[TV] Erro no canal de controlo:', err);
+            setStatus('O comando perdeu a ligação.', 'error');
+        });
+    });
+
+    peer.on('error', (err) => {
+        console.error('[TV] Erro PeerJS:', err);
+        setStatus(`Erro do comando remoto: ${err?.type || err?.message || 'erro de rede'}`, 'error');
+    });
+
+    peer.on('disconnected', () => {
+        console.warn('[TV] PeerJS desconectado.');
+        setStatus('Comando remoto temporariamente desligado.', 'error');
     });
 }
 
@@ -108,6 +193,11 @@ function initControllerMode() {
         return;
     }
 
+    if (typeof Peer !== 'function') {
+        setControllerStatus('PeerJS não foi carregado. Verifica a Internet.', 'error');
+        return;
+    }
+
     const peer = new Peer();
 
     peer.on('open', () => {
@@ -116,6 +206,7 @@ function initControllerMode() {
 
         conn.on('open', () => {
             console.log("Conectado à TV com sucesso!");
+            setControllerStatus('Ligado à TV.', 'success');
             
             // Mapeia todos os botões do controle
             const buttons = document.querySelectorAll('[data-button]');
@@ -142,9 +233,18 @@ function initControllerMode() {
             });
         });
 
+        conn.on('close', () => {
+            setControllerStatus('Ligação à TV encerrada.', 'error');
+        });
+
         conn.on('error', (err) => {
             console.error("Erro na conexão:", err);
-            alert("Erro ao conectar com a TV.");
+            setControllerStatus(`Erro ao conectar com a TV: ${err?.type || err?.message || 'erro de rede'}`, 'error');
         });
+    });
+
+    peer.on('error', (err) => {
+        console.error('[CONTROLE] Erro PeerJS:', err);
+        setControllerStatus(`Erro de rede: ${err?.type || err?.message || 'erro desconhecido'}`, 'error');
     });
 }
